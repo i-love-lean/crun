@@ -322,6 +322,12 @@ libkrun_configure_vm (uint32_t ctx_id, void *handle, struct krun_config *kconf, 
         return crun_make_error (err, -ret, "could not enable nested virtualization");
     }
 
+  int32_t (*krun_add_vsock) (uint32_t ctx_id, uint32_t tsi_features);
+  krun_add_vsock = dlsym (handle, "krun_add_vsock");
+  uint32_t tsi_features = kconf->use_passt ? 0 : KRUN_TSI_HIJACK_INET;
+  if (krun_add_vsock != NULL)
+    krun_add_vsock (ctx_id, tsi_features);
+
   if (kconf->use_passt)
     {
       krun_add_net_unixstream = dlsym (handle, "krun_add_net_unixstream");
@@ -433,7 +439,7 @@ static int
 libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname, char *const argv[])
 {
   runtime_spec_schema_config_schema *def = container->container_def;
-  int32_t (*krun_set_log_level) (uint32_t level);
+  int32_t (*krun_init_log) (int target_fd, uint32_t level, uint32_t style, uint32_t options);
   int (*krun_start_enter) (uint32_t ctx_id);
   int32_t (*krun_add_virtiofs2) (uint32_t ctx_id, const char *c_tag, const char *c_path, uint64_t shm_size);
   int32_t (*krun_set_root_disk) (uint32_t ctx_id, const char *disk_path);
@@ -461,22 +467,22 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
   handle = kconf->handle;
   ctx_id = kconf->ctx_id;
 
-  krun_set_log_level = dlsym (handle, "krun_set_log_level");
+  krun_init_log = dlsym (handle, "krun_init_log");
   krun_start_enter = dlsym (handle, "krun_start_enter");
-  if (krun_set_log_level == NULL || krun_start_enter == NULL)
+  if (krun_init_log == NULL || krun_start_enter == NULL)
     error (EXIT_FAILURE, 0, "could not find symbol in the krun library");
 
   /* Set log level according to crun's verbosity. */
   switch (libcrun_get_verbosity ())
     {
     case LIBCRUN_VERBOSITY_DEBUG:
-      krun_set_log_level (KRUN_LOG_LEVEL_DEBUG);
+      krun_init_log (KRUN_LOG_TARGET_DEFAULT, KRUN_LOG_LEVEL_DEBUG, KRUN_LOG_STYLE_AUTO, 0);
       break;
     case LIBCRUN_VERBOSITY_WARNING:
-      krun_set_log_level (KRUN_LOG_LEVEL_WARN);
+      krun_init_log (KRUN_LOG_TARGET_DEFAULT, KRUN_LOG_LEVEL_WARN, KRUN_LOG_STYLE_AUTO, 0);
       break;
     default:
-      krun_set_log_level (KRUN_LOG_LEVEL_ERROR);
+      krun_init_log (KRUN_LOG_TARGET_DEFAULT, KRUN_LOG_LEVEL_ERROR, KRUN_LOG_STYLE_AUTO, 0);
       break;
     }
 
@@ -543,6 +549,19 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
                            (const char *const *) def->process->env);
       if (UNLIKELY (ret < 0))
         error (EXIT_FAILURE, -ret, "could not set enclave execution arguments");
+    }
+  else
+    {
+      // Add console for libkrun 2.0.
+      int32_t (*krun_add_virtio_console_default) (uint32_t ctx_id, int input_fd, int output_fd, int err_fd);
+
+      krun_add_virtio_console_default = dlsym (handle, "krun_add_virtio_console_default");
+      if (krun_add_virtio_console_default != NULL)
+        {
+          ret = krun_add_virtio_console_default (ctx_id, STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO);
+          if (UNLIKELY (ret < 0))
+            error (EXIT_FAILURE, -ret, "could not add the default virtio-console");
+        }
     }
 
   ret = libkrun_configure_vm (ctx_id, handle, kconf, container, &err);
@@ -791,9 +810,9 @@ libkrun_load (void **cookie, libcrun_error_t *err)
 {
   int32_t ret;
   struct krun_config *kconf;
-  const char *libkrun_so = "libkrun.so.1";
-  const char *libkrun_sev_so = "libkrun-sev.so.1";
-  const char *libkrun_awsnitro_so = "libkrun-awsnitro.so.1";
+  const char *libkrun_so = "libkrun.so.2";
+  const char *libkrun_sev_so = "libkrun-sev.so.2";
+  const char *libkrun_awsnitro_so = "libkrun-awsnitro.so.2";
 
   kconf = malloc (sizeof (struct krun_config));
   if (kconf == NULL)
