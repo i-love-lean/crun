@@ -3686,7 +3686,8 @@ exec_process_entrypoint (libcrun_context_t *context,
 
   TEMP_FAILURE_RETRY (read (*pipefd1, &own_pid, sizeof (own_pid)));
 
-  cwd = process->cwd ? process->cwd : "/";
+  // Don't chdir if using custom handler
+  cwd = process->cwd && custom_handler == NULL ? process->cwd : "/";
   if (LIKELY (libcrun_safe_chdir (cwd, err) == 0))
     chdir_done = true;
   else
@@ -3746,13 +3747,13 @@ exec_process_entrypoint (libcrun_context_t *context,
   ret = find_executable (&exec_path, process->args[0], process->cwd, err);
   if (UNLIKELY (ret < 0))
     {
-      if (crun_error_get_errno (err) == ENOENT)
+      if (custom_handler == NULL && crun_error_get_errno (err) == ENOENT)
         return ret;
 
       /* If it fails for any other reason, ignore the failure.  We'll try again the lookup
          once the process switched to the use that runs in the container.  This might be necessary
          when opening a file that is on a network file system like NFS, where CAP_DAC_OVERRIDE
-         is not honored.  */
+         is not honored, or when using a custom handler such as for krun.  */
       crun_error_release (err);
     }
 
@@ -3862,7 +3863,7 @@ exec_process_entrypoint (libcrun_context_t *context,
       ret = custom_handler->vtable->exec_func (custom_handler->cookie,
                                                container,
                                                exec_path,
-                                               process->args);
+                                               process);
       if (UNLIKELY (ret < 0))
         return crun_make_error (err, -ret, "exec container process failed with handler as `%s`", custom_handler->vtable->name);
 
@@ -3909,6 +3910,7 @@ libcrun_container_exec_with_options (libcrun_context_t *context, const char *id,
   runtime_spec_schema_config_schema_process *process = opts->process;
   struct libcrun_seccomp_gen_ctx_s seccomp_gen_ctx;
   int ret_from_child = 0;
+  bool krun;
 
   ret = libcrun_read_container_status (&status, state_root, id, err);
   if (UNLIKELY (ret < 0))
@@ -4052,8 +4054,9 @@ libcrun_container_exec_with_options (libcrun_context_t *context, const char *id,
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "prctl unset dumpable");
 
+  krun = custom_handler != NULL && strcmp (custom_handler->vtable->name, "krun") == 0;
   pid = libcrun_join_process (context, container, status.pid, &status, opts->cgroup, context->detach,
-                              process, process->terminal ? &terminal_fd : NULL, err);
+                              process, process->terminal ? &terminal_fd : NULL, krun, err);
   if (UNLIKELY (pid < 0))
     return pid;
 

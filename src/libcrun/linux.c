@@ -6556,6 +6556,7 @@ libcrun_join_process (libcrun_context_t *context,
                       int detach,
                       runtime_spec_schema_config_schema_process *process,
                       int *terminal_fd,
+                      bool krun,
                       libcrun_error_t *err)
 {
   pid_t pid;
@@ -6647,7 +6648,8 @@ libcrun_join_process (libcrun_context_t *context,
   close_and_reset (&sync_socket_fd[0]);
   sync_fd = sync_socket_fd[1];
 
-  ret = join_process_namespaces (container, pid_to_join, status, err);
+  // Don't enter namespaces for krun exec.
+  ret = krun ? 0 : join_process_namespaces (container, pid_to_join, status, err);
   if (UNLIKELY (ret < 0))
     {
       TEMP_FAILURE_RETRY (write (sync_fd, "1", 1));

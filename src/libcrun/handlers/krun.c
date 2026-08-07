@@ -77,6 +77,11 @@
 #define KRUN_FLAVOR_AWS_NITRO "aws-nitro"
 #define KRUN_FLAVOR_SEV "sev"
 
+/* "krun" in ASCII. */
+#define KRUN_SSH_VSOCK_PORT 0x6b72756e
+/* This is in a mount namespace, not in the host filesystem. */
+#define KRUN_SSH_SOCK_FILE "/.krun_ssh.sock"
+
 #define PASST_FD_PARENT 0
 #define PASST_FD_CHILD 1
 
@@ -327,6 +332,17 @@ libkrun_configure_vm (uint32_t ctx_id, void *handle, struct krun_config *kconf, 
   uint32_t tsi_features = kconf->use_passt ? 0 : KRUN_TSI_HIJACK_INET;
   if (krun_add_vsock != NULL)
     krun_add_vsock (ctx_id, tsi_features);
+
+  unlink (KRUN_SSH_SOCK_FILE);
+
+  int32_t (*krun_add_vsock_port2) (uint32_t ctx_id, uint32_t port, const char *c_filepath, bool listen);
+  krun_add_vsock_port2 = dlsym (handle, "krun_add_vsock_port2");
+  if (krun_add_vsock_port2 == NULL)
+    return crun_make_error (err, 0, "exec server requested but could not find symbol `krun_add_vsock_port2` in the krun library");
+
+  ret = krun_add_vsock_port2 (ctx_id, KRUN_SSH_VSOCK_PORT, KRUN_SSH_SOCK_FILE, true);
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, -ret, "could not configure the krun exec vsock port");
 
   if (kconf->use_passt)
     {
@@ -580,6 +596,75 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
     error (EXIT_FAILURE, -ret, "could not start krun");
 
   return ret;
+}
+
+static int
+libkrun_exec_ssh (void *cookie, libcrun_container_t *container,
+                  const char *pathname arg_unused,
+                  runtime_spec_schema_config_schema_process *process)
+{
+  struct krun_config *kconf = (struct krun_config *) cookie;
+  cleanup_free char *sock_addr = NULL;
+  size_t i, j;
+  size_t n = process->args_len;
+  size_t e = process->env_len;
+  char **argv = xmalloc0 ((6 + e + n) * sizeof (char *));
+
+  // Access the Unix socket through ~/.local/share/containers/storage/overlay/SOME_HEX_STRING/merged.
+  xasprintf (&sock_addr, "unix%s" KRUN_SSH_SOCK_FILE, container->container_def->root->path);
+
+  i = 0;
+  argv[i++] = "ssh";
+  // Hide "Permanently added ADDRESS to the list of known hosts."
+  argv[i++] = "-q";
+  // Fix permission error.
+  argv[i++] = "-F/usr/lib/systemd/ssh_config.d/20-systemd-ssh-proxy.conf";
+  if (process->terminal)
+    argv[i++] = "-tt";
+  if (e > 0)
+    {
+      // I hate C string processing.
+      char *prefix = "-o=SetEnv=";
+      size_t prefix_len = strlen (prefix);
+      size_t total_len = prefix_len + e;
+      char *p, *setenv_val, *dest;
+
+      for (j = 0; j < e; j++)
+        {
+          for (p = process->env[j]; *p != '\0'; p++)
+            {
+              if (*p == '\\' || *p == ' ' || *p == '\'' || *p == '"')
+                total_len += 2;
+              else
+                total_len += 1;
+            }
+        }
+
+      setenv_val = xmalloc (total_len);
+      strcpy (setenv_val, prefix);
+      dest = setenv_val + prefix_len;
+      for (j = 0; j < e; j++)
+        {
+          for (p = process->env[j]; *p != '\0'; p++)
+            {
+              if (*p == '\\' || *p == ' ' || *p == '\'' || *p == '"')
+                *dest++ = '\\';
+              *dest++ = *p;
+            }
+          if (j < e - 1)
+            *dest++ = ' ';
+        }
+      *dest = '\0';
+      argv[i++] = setenv_val;
+    }
+  argv[i++] = sock_addr;
+  for (j = 0; j < n; j++)
+    argv[i++] = process->args[j];
+  argv[i] = NULL;
+
+  execvp ("ssh", argv);
+  error (EXIT_FAILURE, errno, "krun exec: execvp ssh");
+  return -1;
 }
 
 static int
@@ -1036,6 +1121,7 @@ struct custom_handler_s handler_libkrun = {
   .load = libkrun_load,
   .unload = libkrun_unload,
   .run_func = libkrun_exec,
+  .exec_func = libkrun_exec_ssh,
   .configure_container = libkrun_configure_container,
   .modify_oci_configuration = libkrun_modify_oci_configuration,
   .close_fds = libkrun_close_fds,

@@ -37,7 +37,8 @@ struct custom_handler_s
                    const char *pathname, char *const argv[]);
 
   int (*exec_func) (void *cookie, libcrun_container_t *container,
-                    const char *pathname, char *const argv[]);
+                    const char *pathname,
+                    runtime_spec_schema_config_schema_process *process);
 
   int (*configure_container) (void *cookie, enum handler_configure_phase phase,
                               libcrun_context_t *context, libcrun_container_t *container,
