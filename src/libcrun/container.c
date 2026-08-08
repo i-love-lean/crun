@@ -1958,6 +1958,10 @@ libcrun_container_delete (libcrun_context_t *context, runtime_spec_schema_config
 int
 libcrun_container_kill (libcrun_context_t *context, const char *id, const char *signal, libcrun_error_t *err)
 {
+  cleanup_custom_handler_instance struct custom_handler_instance_s *custom_handler = NULL;
+  cleanup_container libcrun_container_t *container = NULL;
+  cleanup_free char *config_file = NULL;
+  cleanup_free char *dir = NULL;
   int sig, ret;
   const char *state_root = context->state_root;
   cleanup_container_status libcrun_container_status_t status = {};
@@ -1969,6 +1973,27 @@ libcrun_container_kill (libcrun_context_t *context, const char *id, const char *
   ret = libcrun_read_container_status (&status, state_root, id, err);
   if (UNLIKELY (ret < 0))
     return ret;
+
+  ret = libcrun_get_state_directory (&dir, state_root, id, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  ret = append_paths (&config_file, err, dir, "config.json", NULL);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  container = libcrun_container_load_from_file (config_file, err);
+  if (UNLIKELY (container == NULL))
+    return -1;
+
+  container->context = context;
+
+  ret = libcrun_configure_handler (context->handler_manager, context, container, &custom_handler, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  if (custom_handler && custom_handler->vtable->kill_func)
+    return custom_handler->vtable->kill_func (custom_handler->cookie, container, status.pid, sig, err);
 
   return libcrun_kill_linux (&status, sig, err);
 }

@@ -29,6 +29,7 @@
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/sysmacros.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <ocispec/runtime_spec_schema_config_schema.h>
@@ -668,6 +669,52 @@ libkrun_exec_ssh (void *cookie, libcrun_container_t *container,
 }
 
 static int
+libkrun_kill_ssh (void *cookie, libcrun_container_t *container, pid_t pid, int signal, libcrun_error_t *err)
+{
+  runtime_spec_schema_config_schema_process process = {
+    0,
+  };
+  char sig_str[16];
+  char *args[2];
+  pid_t ssh_pid;
+  int ret, devnull;
+
+  // Handle SIGKILL ourselves instead of using libkrun_exec_ssh
+  if (signal == SIGKILL)
+    {
+      ret = kill (pid, SIGKILL);
+      if (UNLIKELY (ret < 0))
+        return crun_make_error (err, errno, "kill container");
+      return 0;
+    }
+
+  snprintf (sig_str, sizeof (sig_str), "%d", signal);
+  args[0] = "\x01KRUN_STOP";
+  args[1] = sig_str;
+  process.args = args;
+  process.args_len = 2;
+
+  ssh_pid = fork ();
+  if (UNLIKELY (ssh_pid < 0))
+    return crun_make_error (err, errno, "fork");
+
+  if (ssh_pid == 0)
+    {
+      devnull = open ("/dev/null", O_RDWR);
+      if (devnull >= 0)
+        {
+          dup2 (devnull, STDIN_FILENO);
+          dup2 (devnull, STDOUT_FILENO);
+          dup2 (devnull, STDERR_FILENO);
+        }
+      libkrun_exec_ssh (cookie, container, NULL, &process);
+      _safe_exit (EXIT_FAILURE);
+    }
+
+  return 0;
+}
+
+static int
 libkrun_start_passt (void *cookie, libcrun_container_t *container)
 {
   struct krun_config *kconf = (struct krun_config *) cookie;
@@ -1122,6 +1169,7 @@ struct custom_handler_s handler_libkrun = {
   .unload = libkrun_unload,
   .run_func = libkrun_exec,
   .exec_func = libkrun_exec_ssh,
+  .kill_func = libkrun_kill_ssh,
   .configure_container = libkrun_configure_container,
   .modify_oci_configuration = libkrun_modify_oci_configuration,
   .close_fds = libkrun_close_fds,

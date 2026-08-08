@@ -40,6 +40,9 @@ struct custom_handler_s
                     const char *pathname,
                     runtime_spec_schema_config_schema_process *process);
 
+  int (*kill_func) (void *cookie, libcrun_container_t *container,
+                    pid_t pid, int signal, libcrun_error_t *err);
+
   int (*configure_container) (void *cookie, enum handler_configure_phase phase,
                               libcrun_context_t *context, libcrun_container_t *container,
                               const char *rootfs, libcrun_error_t *err);
